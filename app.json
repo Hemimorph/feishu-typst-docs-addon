@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "appID": "FOO",
+  "appType": "docs-addon",
+  "blockTypeID": "FOO",
+  "projectName": "Typst Preview",
+  "contributes": {
+    "addPanel": {
+      "initialHeight": 360,
+      "view": "index.html",
+      "useHostLoading": true,
+      "align": "center",
+      "resizeType": "none"
+    },
+    "modal": {
+      "initialHeight": 720,
+      "view": "modal.html"
+    }
+  }
+}

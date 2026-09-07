@@ -1,0 +1,43 @@
+{
+  "name": "feishu-typst-docs-addon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Feishu Docs add-on for editing and previewing Typst documents.",
+  "license": "MIT",
+  "scripts": {
+    "start": "cross-env NODE_ENV=development webpack-dev-server --mode development",
+    "build": "cross-env NODE_ENV=production CI_FLAG=true webpack --mode production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "upload": "npm run build && opdev upload ./dist"
+  },
+  "dependencies": {
+    "@lark-opdev/block-docs-addon-api": "0.0.11",
+    "@myriaddreamin/typst-ts-renderer": "0.7.0",
+    "@myriaddreamin/typst-ts-web-compiler": "0.7.0",
+    "@myriaddreamin/typst.ts": "0.7.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "@lark-opdev/block-docs-addon-webpack-utils": "^1.0.0",
+    "@pmmmwh/react-refresh-webpack-plugin": "^0.5.10",
+    "@types/react": "18.2.79",
+    "@types/react-dom": "18.2.25",
+    "@types/webpack": "^5.28.5",
+    "cross-env": "^7.0.3",
+    "css-loader": "^6.11.0",
+    "esbuild-loader": "^4.2.2",
+    "html-webpack-plugin": "^5.6.0",
+    "mini-css-extract-plugin": "^2.9.0",
+    "react-refresh": "^0.14.2",
+    "style-loader": "^3.3.4",
+    "typescript": "^5.4.5",
+    "vitest": "^0.34.6",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.2",
+    "webpackbar": "^6.0.1"
+  }
+}
