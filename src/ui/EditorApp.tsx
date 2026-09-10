@@ -257,7 +257,7 @@ export const EditorApp = () => {
           const customFamilyCount = catalog.filter((font) => font.customUrls.length).length;
           setFontMessage({
             type: 'success',
-            text: `字体已应用：${fonts.length} 个远程文件、${embeddedFonts.length} 个嵌入文件，识别出 ${customFamilyCount} 个自定义字族。`,
+            text: `字体已应用：扫描 ${fonts.length} 个远程资源、${embeddedFonts.length} 个嵌入文件，识别出 ${customFamilyCount} 个自定义字族。`,
           });
         }
       })
@@ -686,15 +686,12 @@ export const EditorApp = () => {
             </span>
             <span>内嵌原文件 {formatBytes(embeddedTotalBytes)}</span>
           </div>
-          <small>
-            源码、配置和内嵌资源会整体 gzip 无损压缩；图片与字体解压后保持原始字节不变。
-          </small>
         </div>
         <div className="resource-section">
           <div className="section-heading">
             <div>
               <h2>字体</h2>
-              <p>每行一个 HTTPS 字体 URL；支持 TTF、OTF、TTC 和 WOFF，暂不支持 WOFF2。</p>
+              <p>每行一个 HTTPS 字体或压缩包 URL；ZIP、tar.gz/tgz 中的字体会被全部扫描，暂不支持 WOFF2。</p>
             </div>
             <div className="resource-actions">
               <label className="button file-button">
@@ -724,7 +721,7 @@ export const EditorApp = () => {
           <textarea
             className="url-list"
             value={fontsText}
-            placeholder="https://npm-cdn.example.com/npm/font-package@version/fonts/example.otf"
+            placeholder={'https://cdn.example.com/fonts/example.otf\nhttps://cdn.example.com/fonts/family.zip'}
             onChange={(event) => updateFonts(event.target.value)}
           />
           {draft.embeddedFonts.length ? (

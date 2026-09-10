@@ -1,8 +1,11 @@
-import { loadFonts } from '@myriaddreamin/typst.ts';
 import { TypstSnippet } from '@myriaddreamin/typst.ts/contrib/snippet';
 import type { TypstSnippetProvider } from '@myriaddreamin/typst.ts/contrib/snippet';
 import { base64ToBytes } from './embedded';
 import { errorMessage } from './error';
+import {
+  extractFontFiles,
+  fontArchiveCrc32,
+} from './font-archive';
 import {
   BUILTIN_TYPST_FONTS,
   fontInfoToCatalog,
@@ -30,6 +33,11 @@ const MAIN_FILE = '/project/main.typ';
 
 const byteCache = new Map<string, Promise<Uint8Array>>();
 const fontByteCache = new Map<string, Promise<Uint8Array>>();
+interface LoadedRemoteFont {
+  source: string;
+  bytes: Uint8Array;
+}
+const remoteFontCache = new Map<string, Promise<LoadedRemoteFont[]>>();
 
 const loadRemoteBytes = (url: string): Promise<Uint8Array> => {
   const cacheKey = `remote:${url}`;
@@ -91,8 +99,8 @@ const loadEmbeddedImageBytes = (asset: EmbeddedImageAsset): Promise<Uint8Array> 
   return task;
 };
 
-const loadFontBytes = (url: string): Promise<Uint8Array> => {
-  const existing = fontByteCache.get(url);
+const loadRemoteFonts = (url: string): Promise<LoadedRemoteFont[]> => {
+  const existing = remoteFontCache.get(url);
   if (existing) return existing;
 
   const task = (async () => {
@@ -104,12 +112,18 @@ const loadFontBytes = (url: string): Promise<Uint8Array> => {
     if (!response.ok) {
       throw new Error(`字体请求失败（${response.status}）：${url}`);
     }
-    return normalizeFontBytes(new Uint8Array(await response.arrayBuffer()));
+    const files = await extractFontFiles(new Uint8Array(await response.arrayBuffer()), url);
+    return Promise.all(
+      files.map(async (file) => ({
+        source: files.length === 1 ? url : `${url}#${encodeURIComponent(file.path)}`,
+        bytes: await normalizeFontBytes(file.bytes),
+      })),
+    );
   })();
 
-  fontByteCache.set(url, task);
+  remoteFontCache.set(url, task);
   task.catch(() => {
-    if (fontByteCache.get(url) === task) fontByteCache.delete(url);
+    if (remoteFontCache.get(url) === task) remoteFontCache.delete(url);
   });
   return task;
 };
@@ -133,31 +147,36 @@ const preloadNormalizedFonts = (
   urls: string[],
   embeddedFonts: EmbeddedFontAsset[],
 ): TypstSnippetProvider => {
-  const embeddedByKey = new Map(embeddedFonts.map((font) => [embeddedFontKey(font), font]));
-  const builtInByKey = new Map(builtInFonts.map((font) => [runtimeAssetKey(font), font]));
   return {
     key: 'feishu-normalized-fonts',
     forRoles: ['compiler'],
     provides: [
-      loadFonts([...builtInByKey.keys(), ...urls, ...embeddedByKey.keys()], {
-        assets: false,
-        fetcher: async (input) => {
-          const source =
-            typeof input === 'string'
-              ? input
-              : input instanceof URL
-                ? input.toString()
-                : input.url;
-          const embedded = embeddedByKey.get(source);
-          const builtIn = builtInByKey.get(source);
-          const bytes = embedded
-            ? await loadEmbeddedFontBytes(embedded)
-            : builtIn
-              ? await normalizeFontBytes(await loadRuntimeAssetBytes(builtIn))
-              : await loadFontBytes(source);
-          return new Response(bytes.slice().buffer);
-        },
-      }),
+      async (_stage, { builder }) => {
+        const [builtInGroups, remoteGroups, embeddedGroups] = await Promise.all([
+          Promise.all(
+            builtInFonts.map(async (font) => [
+              {
+                source: runtimeAssetKey(font),
+                bytes: await normalizeFontBytes(await loadRuntimeAssetBytes(font)),
+              },
+            ]),
+          ),
+          Promise.all(urls.map(loadRemoteFonts)),
+          Promise.all(
+            embeddedFonts.map(async (font) => [
+              { source: embeddedFontKey(font), bytes: await loadEmbeddedFontBytes(font) },
+            ]),
+          ),
+        ]);
+        const loaded = [...builtInGroups, ...remoteGroups, ...embeddedGroups].flat();
+        const seen = new Set<string>();
+        for (const font of loaded) {
+          const fingerprint = `${font.bytes.byteLength}:${fontArchiveCrc32(font.bytes)}`;
+          if (seen.has(fingerprint)) continue;
+          seen.add(fingerprint);
+          await builder.add_raw_font(font.bytes);
+        }
+      },
     ],
   };
 };
@@ -247,10 +266,15 @@ class TypstRuntime {
 
       for (const url of this.fonts) {
         try {
-          const bytes = await loadFontBytes(url);
-          const info = await resolver.getFontInfo(bytes);
-          const parsed = fontInfoToCatalog(info, url);
-          if (!parsed.length) throw new Error('文件中没有可识别的字体字族');
+          const files = await loadRemoteFonts(url);
+          const catalogs = await Promise.all(
+            files.map(async (font) => {
+              const info = await resolver.getFontInfo(font.bytes);
+              return fontInfoToCatalog(info, font.source);
+            }),
+          );
+          const parsed = catalogs.flat();
+          if (!parsed.length) throw new Error('资源中没有可识别的字体字族');
           customFonts.push(...parsed);
         } catch (reason) {
           throw new Error(`字体 ${url} 加载失败：${errorMessage(reason)}`);
@@ -314,6 +338,7 @@ export const disposeTypstRuntime = (): void => {
   runtime = undefined;
   byteCache.clear();
   fontByteCache.clear();
+  remoteFontCache.clear();
   resetRuntimeAssetLoaderState();
 };
 

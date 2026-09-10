@@ -46,7 +46,7 @@ npm run build
 - 点击正文 Typst 块右上角的“编辑”。
 - 点击“下载 PDF”会使用当前保存的源码、字体和图片资源生成 PDF，并以飞书文档标题命名。
 - 源码编辑后会自动刷新右侧预览，点击“保存”把源码和资源清单写入小组件 Record。
-- 字体区域每行填写一个 HTTPS 字体 URL，再点“应用到预览”；也可以上传字体并嵌入组件。传入内容由 typst.ts 直接识别，Typst 源码应使用字体文件内部的 family name。
+- 字体区域每行填写一个 HTTPS 字体或压缩包 URL，再点“应用到预览”；支持单个 TTF、OTF、TTC、WOFF，以及 ZIP、tar.gz/tgz 字体包。压缩包会递归扫描并加载其中所有受支持的字体文件；也可以上传字体并嵌入组件。Typst 源码应使用字体文件内部的 family name。
 - 默认远程字体包含 `Noto Serif SC`、`Libertinus Serif`、`New Computer Modern`、`New Computer Modern Math` 和 `DejaVu Sans Mono`；字体包版本固定，不会跟随镜像的 latest 标签漂移。
 - 远程图片需要填写 URL 和它在 Typst 中使用的相对路径。
 - 点击“扫描当前文档图片”可以把已有飞书图片块加入资源清单。
