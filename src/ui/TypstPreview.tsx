@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../error';
+import { formatBytes } from '../embedded';
 import { typstRenderKey, type TypstAddonRecord } from '../model';
+import {
+  subscribeRuntimeDownloadProgress,
+  type RuntimeDownloadProgress,
+} from '../npm-archive';
 
 interface TypstPreviewProps {
   record: TypstAddonRecord;
@@ -96,7 +101,17 @@ export const TypstPreview = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [settledKey, setSettledKey] = useState<string>();
+  const [download, setDownload] = useState<RuntimeDownloadProgress>({
+    active: false,
+    loadedBytes: 0,
+    fileCount: 0,
+  });
   const renderKey = typstRenderKey(record);
+  const downloadPercent = download.totalBytes
+    ? Math.min(100, (download.loadedBytes / download.totalBytes) * 100)
+    : undefined;
+
+  useEffect(() => subscribeRuntimeDownloadProgress(setDownload), []);
 
   useEffect(() => {
     onSettledRef.current = onSettled;
@@ -104,6 +119,7 @@ export const TypstPreview = ({
 
   useEffect(() => {
     if (!record.source.trim()) {
+      requestId.current += 1;
       setError(undefined);
       setLoading(false);
       setSvg(undefined);
@@ -133,7 +149,13 @@ export const TypstPreview = ({
         });
     }, 350);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      // Dynamic import, runtime initialization and compilation cannot be
+      // cancelled. Invalidate the request so it cannot update an unmounted or
+      // newer preview after any of those asynchronous stages settle.
+      if (requestId.current === currentRequest) requestId.current += 1;
+    };
   }, [record, renderKey]);
 
   useEffect(() => {
@@ -150,7 +172,35 @@ export const TypstPreview = ({
         />
       ) : null}
       {!svg && !loading ? <div className="preview-empty">{emptyLabel}</div> : null}
-      {loading ? <div className="preview-loading">正在编译 Typst…</div> : null}
+      {loading ? (
+        <div className={`preview-loading${download.active ? ' downloading' : ''}`}>
+          <div className="preview-loading-label">
+            {download.active ? (
+              <>
+                <span>正在下载 Typst 资源</span>
+                <span>
+                  {formatBytes(download.loadedBytes)}
+                  {download.totalBytes ? ` / ${formatBytes(download.totalBytes)}` : ''}
+                </span>
+              </>
+            ) : (
+              <span>正在编译 Typst…</span>
+            )}
+          </div>
+          {download.active ? (
+            <div
+              className={`runtime-download-track${downloadPercent === undefined ? ' indeterminate' : ''}`}
+              role="progressbar"
+              aria-label="Typst 运行时资源下载进度"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={downloadPercent === undefined ? undefined : Math.round(downloadPercent)}
+            >
+              <span style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {error ? <pre className="preview-error">{error}</pre> : null}
     </div>
   );

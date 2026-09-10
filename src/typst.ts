@@ -19,7 +19,11 @@ import {
   type TypstImageAsset,
 } from './model';
 import { normalizeFontBytes } from './woff';
-import { loadRuntimeAssetBytes, runtimeAssetKey } from './npm-archive';
+import {
+  loadRuntimeAssetBytes,
+  resetRuntimeAssetLoaderState,
+  runtimeAssetKey,
+} from './npm-archive';
 import type { TypstRuntimeAssetLocation } from './model';
 
 const MAIN_FILE = '/project/main.typ';
@@ -28,7 +32,8 @@ const byteCache = new Map<string, Promise<Uint8Array>>();
 const fontByteCache = new Map<string, Promise<Uint8Array>>();
 
 const loadRemoteBytes = (url: string): Promise<Uint8Array> => {
-  const existing = byteCache.get(`remote:${url}`);
+  const cacheKey = `remote:${url}`;
+  const existing = byteCache.get(cacheKey);
   if (existing) return existing;
 
   const task = (async () => {
@@ -43,8 +48,10 @@ const loadRemoteBytes = (url: string): Promise<Uint8Array> => {
     return new Uint8Array(await response.arrayBuffer());
   })();
 
-  byteCache.set(`remote:${url}`, task);
-  task.catch(() => byteCache.delete(`remote:${url}`));
+  byteCache.set(cacheKey, task);
+  task.catch(() => {
+    if (byteCache.get(cacheKey) === task) byteCache.delete(cacheKey);
+  });
   return task;
 };
 
@@ -62,7 +69,9 @@ const loadFeishuBytes = (asset: Extract<TypstImageAsset, { source: 'feishu' }>) 
   })();
 
   byteCache.set(cacheKey, task);
-  task.catch(() => byteCache.delete(cacheKey));
+  task.catch(() => {
+    if (byteCache.get(cacheKey) === task) byteCache.delete(cacheKey);
+  });
   return task;
 };
 
@@ -99,7 +108,9 @@ const loadFontBytes = (url: string): Promise<Uint8Array> => {
   })();
 
   fontByteCache.set(url, task);
-  task.catch(() => fontByteCache.delete(url));
+  task.catch(() => {
+    if (fontByteCache.get(url) === task) fontByteCache.delete(url);
+  });
   return task;
 };
 
@@ -111,7 +122,9 @@ const loadEmbeddedFontBytes = (font: EmbeddedFontAsset): Promise<Uint8Array> => 
   if (existing) return existing;
   const task = normalizeFontBytes(base64ToBytes(font.data));
   fontByteCache.set(cacheKey, task);
-  task.catch(() => fontByteCache.delete(cacheKey));
+  task.catch(() => {
+    if (fontByteCache.get(cacheKey) === task) fontByteCache.delete(cacheKey);
+  });
   return task;
 };
 
@@ -291,3 +304,22 @@ export const renderTypstPdf = async (record: TypstAddonRecord): Promise<Uint8Arr
 export const getAvailableTypstFonts = async (
   record: TypstAddonRecord,
 ): Promise<AvailableTypstFont[]> => getRuntime(record).availableFonts();
+
+/**
+ * Drop only process-local resources. Cache Storage remains intact so a newly
+ * mounted iframe can reuse the verified downloads without another request.
+ */
+export const disposeTypstRuntime = (): void => {
+  runtimeKey = '';
+  runtime = undefined;
+  byteCache.clear();
+  fontByteCache.clear();
+  resetRuntimeAssetLoaderState();
+};
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', (event) => {
+    // A page entering the back/forward cache is still alive and may resume.
+    if (!(event as PageTransitionEvent).persisted) disposeTypstRuntime();
+  });
+}

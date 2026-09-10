@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DOCS_MODE, type RecordData } from '@lark-opdev/block-docs-addon-api';
 import { docsApi } from '../feishu';
+import { createHostReadyNotifier } from '../app-ready';
 import { errorMessage } from '../error';
 import { measureContentHeight, syncHostHeight } from '../host-height';
 import { DEFAULT_RECORD, type TypstAddonRecord } from '../model';
@@ -12,7 +13,7 @@ import { useFeishuTheme } from './useFeishuTheme';
 export const InlineApp = () => {
   useFeishuTheme();
   const containerRef = useRef<HTMLElement>(null);
-  const appReadyRef = useRef(false);
+  const mountedRef = useRef(true);
   const resizeMigrationAttemptedRef = useRef(false);
   const heightSyncQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const [record, setRecord] = useState<TypstAddonRecord>(DEFAULT_RECORD);
@@ -24,9 +25,32 @@ export const InlineApp = () => {
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const notifyHostReady = createHostReadyNotifier(
+      () => docsApi.LifeCycle.notifyAppReady(),
+      (reason) => {
+        if (mountedRef.current) {
+          setError(`通知飞书组件就绪失败：${errorMessage(reason)}`);
+        }
+      },
+    );
+    // Host loading only covers the iframe boot. Typst resources may still be
+    // downloading; the mounted UI reports that work with its own progress bar.
+    notifyHostReady();
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     let editableByPermission = true;
     let recordChangeSequence = 0;
+    let recordSubscribed = false;
+    let modeSubscribed = false;
     const onRecordChange = (value: RecordData) => {
       const sequence = ++recordChangeSequence;
       void fromRecordData(value)
@@ -43,6 +67,24 @@ export const InlineApp = () => {
     const onModeChange = (mode: DOCS_MODE) => {
       if (alive) setCanEdit(editableByPermission && mode === DOCS_MODE.EDITING);
     };
+    const unsubscribeRecord = async () => {
+      if (!recordSubscribed) return;
+      recordSubscribed = false;
+      try {
+        await docsApi.Record.offRecordChange(onRecordChange);
+      } catch (reason) {
+        console.info('取消飞书 Record 监听失败', reason);
+      }
+    };
+    const unsubscribeMode = async () => {
+      if (!modeSubscribed) return;
+      modeSubscribed = false;
+      try {
+        await docsApi.Env.DocsMode.offDocsModeChange(onModeChange);
+      } catch (reason) {
+        console.info('取消飞书文档模式监听失败', reason);
+      }
+    };
 
     (async () => {
       try {
@@ -58,7 +100,14 @@ export const InlineApp = () => {
         setRecordLoaded(true);
         setCanEdit(permission.editable && mode === DOCS_MODE.EDITING);
         await docsApi.Record.onRecordChange(onRecordChange);
+        recordSubscribed = true;
+        if (!alive) {
+          await unsubscribeRecord();
+          return;
+        }
         await docsApi.Env.DocsMode.onDocsModeChange(onModeChange);
+        modeSubscribed = true;
+        if (!alive) await unsubscribeMode();
       } catch (reason) {
         if (alive) {
           setError(errorMessage(reason));
@@ -69,8 +118,8 @@ export const InlineApp = () => {
 
     return () => {
       alive = false;
-      void docsApi.Record.offRecordChange(onRecordChange);
-      void docsApi.Env.DocsMode.offDocsModeChange(onModeChange);
+      void unsubscribeRecord();
+      void unsubscribeMode();
     };
   }, []);
 
@@ -109,19 +158,11 @@ export const InlineApp = () => {
   );
 
   const handlePreviewSettled = useCallback(() => {
+    if (!mountedRef.current) return;
     setHeightSyncEnabled(true);
-    void (async () => {
-      try {
-        await updateHostHeight(true);
-      } catch (reason) {
-        setError(errorMessage(reason));
-      } finally {
-        if (!appReadyRef.current) {
-          appReadyRef.current = true;
-          await docsApi.LifeCycle.notifyAppReady();
-        }
-      }
-    })();
+    void updateHostHeight(true).catch((reason) => {
+      if (mountedRef.current) setError(errorMessage(reason));
+    });
   }, [updateHostHeight]);
 
   useEffect(() => {
@@ -171,11 +212,12 @@ export const InlineApp = () => {
         width: 1180,
         data: { version: record.version },
       });
-      setRecord(await readAddonRecord());
+      const nextRecord = await readAddonRecord();
+      if (mountedRef.current) setRecord(nextRecord);
     } catch (reason) {
-      setError(errorMessage(reason));
+      if (mountedRef.current) setError(errorMessage(reason));
     } finally {
-      setOpening(false);
+      if (mountedRef.current) setOpening(false);
     }
   };
 
@@ -189,11 +231,11 @@ export const InlineApp = () => {
         .then((docRef) => docsApi.Document.getTitle(docRef))
         .catch(() => 'Typst');
       const [pdf, title] = await Promise.all([pdfPromise, titlePromise]);
-      downloadPdfBytes(pdf, title);
+      if (mountedRef.current) downloadPdfBytes(pdf, title);
     } catch (reason) {
-      setError(`PDF 下载失败：${errorMessage(reason)}`);
+      if (mountedRef.current) setError(`PDF 下载失败：${errorMessage(reason)}`);
     } finally {
-      setDownloading(false);
+      if (mountedRef.current) setDownloading(false);
     }
   };
 

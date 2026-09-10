@@ -114,6 +114,7 @@ export const EditorApp = () => {
   const assetListRef = useRef<HTMLDivElement>(null);
   const fontRequestId = useRef(0);
   const quotaRequestId = useRef(0);
+  const mountedRef = useRef(true);
   const appliedFontsKey = JSON.stringify(draft.fonts);
   const embeddedFontsKey = JSON.stringify(
     draft.embeddedFonts.map((font) => [font.id, font.sha256, font.size]),
@@ -140,9 +141,18 @@ export const EditorApp = () => {
   );
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     let editableByPermission = true;
     let recordChangeSequence = 0;
+    let recordSubscribed = false;
+    let modeSubscribed = false;
     const onRecordChange = (value: RecordData) => {
       const sequence = ++recordChangeSequence;
       void fromRecordData(value)
@@ -171,6 +181,24 @@ export const EditorApp = () => {
     const onModeChange = (mode: DOCS_MODE) => {
       if (alive) setCanEdit(editableByPermission && mode === DOCS_MODE.EDITING);
     };
+    const unsubscribeRecord = async () => {
+      if (!recordSubscribed) return;
+      recordSubscribed = false;
+      try {
+        await docsApi.Record.offRecordChange(onRecordChange);
+      } catch (reason) {
+        console.info('取消飞书 Record 监听失败', reason);
+      }
+    };
+    const unsubscribeMode = async () => {
+      if (!modeSubscribed) return;
+      modeSubscribed = false;
+      try {
+        await docsApi.Env.DocsMode.offDocsModeChange(onModeChange);
+      } catch (reason) {
+        console.info('取消飞书文档模式监听失败', reason);
+      }
+    };
 
     (async () => {
       try {
@@ -189,7 +217,14 @@ export const EditorApp = () => {
         setCanEdit(permission.editable && mode === DOCS_MODE.EDITING);
         loaded.current = true;
         await docsApi.Record.onRecordChange(onRecordChange);
+        recordSubscribed = true;
+        if (!alive) {
+          await unsubscribeRecord();
+          return;
+        }
         await docsApi.Env.DocsMode.onDocsModeChange(onModeChange);
+        modeSubscribed = true;
+        if (!alive) await unsubscribeMode();
       } catch (reason) {
         if (alive) setMessage({ type: 'error', text: errorMessage(reason) });
       }
@@ -197,8 +232,9 @@ export const EditorApp = () => {
 
     return () => {
       alive = false;
-      void docsApi.Record.offRecordChange(onRecordChange);
-      void docsApi.Env.DocsMode.offDocsModeChange(onModeChange);
+      loaded.current = false;
+      void unsubscribeRecord();
+      void unsubscribeMode();
     };
   }, []);
 
@@ -231,6 +267,10 @@ export const EditorApp = () => {
         setFontCatalogStatus('error');
         setFontMessage({ type: 'error', text: errorMessage(reason) });
       });
+
+    return () => {
+      if (fontRequestId.current === currentRequest) fontRequestId.current += 1;
+    };
   }, [appliedFontsKey, embeddedFontsKey, fontReload]);
 
   useEffect(() => {
@@ -252,7 +292,10 @@ export const EditorApp = () => {
         });
     }, 180);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (quotaRequestId.current === currentRequest) quotaRequestId.current += 1;
+    };
   }, [draft, fontsText]);
 
   const updateDraft = (updater: (current: TypstAddonRecord) => TypstAddonRecord) => {
@@ -271,7 +314,7 @@ export const EditorApp = () => {
   };
 
   const addEmbeddedFonts = async (files: File[]) => {
-    if (!files.length || !canEdit) return;
+    if (!files.length || !canEdit || !mountedRef.current) return;
     setFontCatalogStatus('loading');
     setFontMessage(undefined);
     try {
@@ -281,6 +324,7 @@ export const EditorApp = () => {
           throw new Error(`${file.name} 不是支持的字体文件；请选择 TTF、OTF、TTC 或 WOFF`);
         }
         const encoded = await encodeLocalFile(file);
+        if (!mountedRef.current) return;
         const duplicate = [...draft.embeddedFonts, ...pending].some(
           (font) => font.sha256 === encoded.sha256,
         );
@@ -291,8 +335,10 @@ export const EditorApp = () => {
           fonts: parseFontUrls(fontsText),
           embeddedFonts: [...draft.embeddedFonts, ...pending, asset],
         });
+        if (!mountedRef.current) return;
         pending.push(asset);
       }
+      if (!mountedRef.current) return;
       if (!pending.length) {
         setFontCatalogStatus('ready');
         setFontMessage({ type: 'success', text: '所选字体已经嵌入，无需重复添加。' });
@@ -307,8 +353,10 @@ export const EditorApp = () => {
         text: `已嵌入 ${pending.length} 个字体文件，正在读取内部字族名…`,
       });
     } catch (reason) {
-      setFontCatalogStatus('error');
-      setFontMessage({ type: 'error', text: errorMessage(reason) });
+      if (mountedRef.current) {
+        setFontCatalogStatus('error');
+        setFontMessage({ type: 'error', text: errorMessage(reason) });
+      }
     }
   };
 
@@ -319,7 +367,7 @@ export const EditorApp = () => {
     }));
 
   const addEmbeddedImages = async (files: File[]) => {
-    if (!files.length || !canEdit) return;
+    if (!files.length || !canEdit || !mountedRef.current) return;
     setImageMessage(undefined);
     try {
       const pending: EmbeddedImageAsset[] = [];
@@ -329,6 +377,7 @@ export const EditorApp = () => {
           throw new Error(`${file.name} 不是浏览器可识别的图片文件`);
         }
         const encoded = await encodeLocalFile(file);
+        if (!mountedRef.current) return;
         const duplicate = [...draft.images, ...pending].some(
           (image) => image.source === 'embedded' && image.sha256 === encoded.sha256,
         );
@@ -346,8 +395,10 @@ export const EditorApp = () => {
           fonts: parseFontUrls(fontsText),
           images: [...draft.images, ...pending, asset],
         });
+        if (!mountedRef.current) return;
         pending.push(asset);
       }
+      if (!mountedRef.current) return;
       if (!pending.length) {
         setImageMessage({ type: 'success', text: '所选图片已经嵌入，无需重复添加。' });
         return;
@@ -361,7 +412,7 @@ export const EditorApp = () => {
         assetListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
     } catch (reason) {
-      setImageMessage({ type: 'error', text: errorMessage(reason) });
+      if (mountedRef.current) setImageMessage({ type: 'error', text: errorMessage(reason) });
     }
   };
 
@@ -388,6 +439,7 @@ export const EditorApp = () => {
   };
 
   const scanDocumentImages = async () => {
+    if (!mountedRef.current) return;
     setLoadingImages(true);
     setMessage(undefined);
     setImageMessage(undefined);
@@ -395,14 +447,17 @@ export const EditorApp = () => {
       const docRef = await docsApi.getActiveDocumentRef();
       const root = await docsApi.Document.getRootBlock(docRef);
       const images = collectImageBlocks(root);
+      if (!mountedRef.current) return;
       setDocumentImages(images);
       if (!images.length) {
         setImageMessage({ type: 'error', text: '当前文档中没有找到图片块。' });
       }
     } catch (reason) {
-      setImageMessage({ type: 'error', text: `扫描文档图片失败：${errorMessage(reason)}` });
+      if (mountedRef.current) {
+        setImageMessage({ type: 'error', text: `扫描文档图片失败：${errorMessage(reason)}` });
+      }
     } finally {
-      setLoadingImages(false);
+      if (mountedRef.current) setLoadingImages(false);
     }
   };
 
@@ -512,7 +567,7 @@ export const EditorApp = () => {
   };
 
   const save = async () => {
-    if (!canEdit) return;
+    if (!canEdit || !mountedRef.current) return;
     setSaving(true);
     setMessage(undefined);
     try {
@@ -520,6 +575,7 @@ export const EditorApp = () => {
       const images = normalizeImageAssets(draft.images);
       const nextRecord = { ...draft, fonts, images };
       const saved = await saveAddonRecord(nextRecord, baseVersion);
+      if (!mountedRef.current) return;
       setDraft(saved);
       setBaseVersion(saved.version);
       baseVersionRef.current = saved.version;
@@ -528,14 +584,16 @@ export const EditorApp = () => {
       setConflicted(false);
       await docsApi.View.Action.closeModal({ saved: true, version: saved.version });
     } catch (reason) {
-      setMessage({
-        type: 'error',
-        text: isRecordTooLargeError(reason)
-          ? `飞书拒绝保存 gzip 后约 ${formatBytes(recordDataBytes)} 的 Record 数据；资源仍保持原始质量，请移除嵌入资源或使用远程 URL。`
-          : errorMessage(reason),
-      });
+      if (mountedRef.current) {
+        setMessage({
+          type: 'error',
+          text: isRecordTooLargeError(reason)
+            ? `飞书拒绝保存 gzip 后约 ${formatBytes(recordDataBytes)} 的 Record 数据；资源仍保持原始质量，请移除嵌入资源或使用远程 URL。`
+            : errorMessage(reason),
+        });
+      }
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   };
 
