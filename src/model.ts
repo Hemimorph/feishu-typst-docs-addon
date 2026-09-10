@@ -36,6 +36,100 @@ export interface EmbeddedFontAsset {
 
 export type TypstImageAsset = RemoteImageAsset | FeishuImageAsset | EmbeddedImageAsset;
 
+declare const __TYPST_RESOURCE_MIRROR__: string;
+declare const __TYPST_RESOURCE_MIRROR_MODE__: TypstResourceMirrorMode;
+
+export type TypstResourceMirrorMode = 'npm-cdn' | 'npm-registry';
+
+export const normalizeResourceMirror = (value: string): string => {
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error('请输入有效的 HTTPS 资源镜像基址');
+  }
+  if (parsed.protocol !== 'https:') throw new Error('资源镜像基址只支持 HTTPS');
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('资源镜像基址不能包含账号、查询参数或片段');
+  }
+  return parsed.toString().replace(/\/+$/, '');
+};
+
+export interface TypstRuntimeAssetLocation {
+  url: string;
+  archivePath?: string;
+}
+
+export interface TypstRuntimeAssetUrls {
+  compilerWasm: TypstRuntimeAssetLocation;
+  rendererWasm: TypstRuntimeAssetLocation;
+  fonts: TypstRuntimeAssetLocation[];
+}
+
+/** Resolve every built-in runtime request from an npm file CDN or NPM Registry. */
+export const getTypstRuntimeAssetUrls = (
+  mirror: string,
+  mode: TypstResourceMirrorMode = 'npm-cdn',
+): TypstRuntimeAssetUrls => {
+  const base = normalizeResourceMirror(mirror);
+  const packageAsset = (
+    packageName: string,
+    version: string,
+    file: string,
+  ): TypstRuntimeAssetLocation => {
+    if (mode === 'npm-registry') {
+      const tarballName = packageName.split('/').pop();
+      return {
+        url: `${base}/${packageName}/-/${tarballName}-${version}.tgz`,
+        archivePath: `package/${file}`,
+      };
+    }
+    return { url: `${base}/${packageName}@${version}/${file}` };
+  };
+  const typstFont = (file: string) =>
+    packageAsset('@typst-wasm/fonts', '1.0.0', `dist/files/${file}`);
+  return {
+    compilerWasm: packageAsset(
+      '@myriaddreamin/typst-ts-web-compiler',
+      '0.7.0',
+      'pkg/typst_ts_web_compiler_bg.wasm',
+    ),
+    rendererWasm: packageAsset(
+      '@myriaddreamin/typst-ts-renderer',
+      '0.7.0',
+      'pkg/typst_ts_renderer_bg.wasm',
+    ),
+    fonts: [
+      'LibertinusSerif-Regular.otf',
+      'LibertinusSerif-Semibold.otf',
+      'LibertinusSerif-Bold.otf',
+      'LibertinusSerif-Italic.otf',
+      'LibertinusSerif-SemiboldItalic.otf',
+      'LibertinusSerif-BoldItalic.otf',
+      'NewCM10-Regular.otf',
+      'NewCM10-Bold.otf',
+      'NewCM10-Italic.otf',
+      'NewCM10-BoldItalic.otf',
+      'NewCMMath-Regular.otf',
+      'NewCMMath-Book.otf',
+      'NewCMMath-Bold.otf',
+      'DejaVuSansMono.ttf',
+      'DejaVuSansMono-Bold.ttf',
+      'DejaVuSansMono-Oblique.ttf',
+      'DejaVuSansMono-BoldOblique.ttf',
+    ].map(typstFont).concat(
+      packageAsset(
+        '@betteroffice/fonts-cjk',
+        '0.1.0',
+        'assets/NotoSerifSC-Regular.otf',
+      ),
+    ),
+  };
+};
+
+export const getConfiguredTypstRuntimeAssetUrls = (): TypstRuntimeAssetUrls =>
+  getTypstRuntimeAssetUrls(__TYPST_RESOURCE_MIRROR__, __TYPST_RESOURCE_MIRROR_MODE__);
+
 export interface TypstAddonRecord {
   schemaVersion: 1;
   version: number;
@@ -47,7 +141,7 @@ export interface TypstAddonRecord {
 
 export const DEFAULT_SOURCE = `#set page(paper: "a4", margin: 1.2cm)
 #set text(
-  font: ("Noto Serif CJK SC", "Libertinus Serif"),
+  font: ("Noto Serif SC", "Libertinus Serif"),
   lang: "zh",
   size: 12pt,
 )
@@ -161,7 +255,6 @@ export const normalizeRecord = (value: unknown): TypstAddonRecord => {
         );
       })
     : [];
-
   return {
     schemaVersion: 1,
     version: typeof value.version === 'number' ? value.version : 0,

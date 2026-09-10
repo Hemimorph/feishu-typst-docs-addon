@@ -25,11 +25,10 @@ const builtInFont = (family: string, variants: string[]): AvailableTypstFont => 
   variants,
 });
 
-// These are the families bundled by typst.ts's `text` and `cjk` asset sets.
+// These are the families loaded from the version-pinned npm font packages.
 // Keep the family names exact: Typst silently falls back when a name is wrong.
 export const BUILTIN_TYPST_FONTS: AvailableTypstFont[] = [
   builtInFont('DejaVu Sans Mono', ['Regular', 'Bold', 'Oblique', 'Bold Oblique']),
-  builtInFont('Inria Serif', ['Regular', 'Bold', 'Italic', 'Bold Italic']),
   builtInFont('Libertinus Serif', [
     'Regular',
     'Semibold',
@@ -40,8 +39,7 @@ export const BUILTIN_TYPST_FONTS: AvailableTypstFont[] = [
   ]),
   builtInFont('New Computer Modern', ['Regular', 'Bold', 'Italic', 'Bold Italic']),
   builtInFont('New Computer Modern Math', ['Regular', 'Book', 'Bold']),
-  builtInFont('Noto Serif CJK SC', ['Regular']),
-  builtInFont('Roboto', ['Regular']),
+  builtInFont('Noto Serif SC', ['Regular']),
 ];
 
 const normalizedFamily = (family: string) => family.trim().toLocaleLowerCase();

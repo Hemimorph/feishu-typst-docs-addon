@@ -39,21 +39,22 @@ describe('fontInfoToCatalog', () => {
 
 describe('font catalog', () => {
   it('contains the actual built-in Typst family names', () => {
-    expect(BUILTIN_TYPST_FONTS.map((font) => font.family)).toContain('Noto Serif CJK SC');
+    expect(BUILTIN_TYPST_FONTS.map((font) => font.family)).toContain('Noto Serif SC');
     expect(BUILTIN_TYPST_FONTS.map((font) => font.family)).toContain('Libertinus Serif');
   });
 
   it('merges built-in and custom faces for the same family', () => {
     const merged = mergeFontCatalog(BUILTIN_TYPST_FONTS, [
       {
-        family: 'Roboto',
+        family: 'Libertinus Serif',
         builtIn: false,
-        customUrls: ['https://cdn.example/roboto-bold.ttf'],
-        variants: ['Bold'],
+        customUrls: ['https://cdn.example/libertinus-black.otf'],
+        variants: ['Black'],
       },
     ]);
-    const roboto = merged.find((font) => font.family === 'Roboto');
-    expect(roboto).toMatchObject({ builtIn: true, variants: ['Regular', 'Bold'] });
+    const libertinus = merged.find((font) => font.family === 'Libertinus Serif');
+    expect(libertinus).toMatchObject({ builtIn: true });
+    expect(libertinus?.variants).toContain('Black');
   });
 });
 
@@ -80,7 +81,7 @@ describe('extractLiteralFontFamilies', () => {
   it('reports names that would silently fall back', () => {
     expect(
       findUnavailableLiteralFonts(
-        '#set text(font: ("Noto Serif CJK SC", "Times New Roman"))',
+        '#set text(font: ("Noto Serif SC", "Times New Roman"))',
         BUILTIN_TYPST_FONTS,
       ),
     ).toEqual(['Times New Roman']);

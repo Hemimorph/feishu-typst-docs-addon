@@ -1,4 +1,5 @@
 const path = require('path');
+const webpack = require('webpack');
 const ReactRefreshWebpackPlugin = require('@pmmmwh/react-refresh-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { EsbuildPlugin } = require('esbuild-loader');
@@ -11,6 +12,33 @@ const {
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 const isProduction = process.env.NODE_ENV === 'production';
+const defaultTypstResourceMirror = 'https://cdn.jsdelivr.net/npm';
+const defaultTypstResourceMirrorMode = 'npm-cdn';
+
+const normalizeResourceMirror = (value) => {
+  let parsed;
+  try {
+    parsed = new URL(value.trim());
+  } catch {
+    throw new Error('TYPST_RESOURCE_MIRROR must be a valid HTTPS base URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('TYPST_RESOURCE_MIRROR must use HTTPS');
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('TYPST_RESOURCE_MIRROR cannot contain credentials, query, or fragment');
+  }
+  return parsed.toString().replace(/\/+$/, '');
+};
+
+const typstResourceMirror = normalizeResourceMirror(
+  process.env.TYPST_RESOURCE_MIRROR || defaultTypstResourceMirror,
+);
+const typstResourceMirrorMode =
+  process.env.TYPST_RESOURCE_MIRROR_MODE || defaultTypstResourceMirrorMode;
+if (!['npm-cdn', 'npm-registry'].includes(typstResourceMirrorMode)) {
+  throw new Error('TYPST_RESOURCE_MIRROR_MODE must be npm-cdn or npm-registry');
+}
 
 module.exports = {
   entry: {
@@ -48,6 +76,10 @@ module.exports = {
     ],
   },
   plugins: [
+    new webpack.DefinePlugin({
+      __TYPST_RESOURCE_MIRROR__: JSON.stringify(typstResourceMirror),
+      __TYPST_RESOURCE_MIRROR_MODE__: JSON.stringify(typstResourceMirrorMode),
+    }),
     ...(isDevelopment
       ? [new ReactRefreshWebpackPlugin(), new WebpackBar()]
       : [new MiniCssExtractPlugin()]),

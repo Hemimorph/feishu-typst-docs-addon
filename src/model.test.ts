@@ -1,12 +1,69 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_SOURCE,
+  getTypstRuntimeAssetUrls,
   isImageAssetReferenced,
   normalizeAssetPath,
   normalizeImageAssets,
   normalizeRecord,
+  normalizeResourceMirror,
   typstRenderKey,
 } from './model';
+
+describe('normalizeResourceMirror', () => {
+  it('keeps path prefixes and removes trailing slashes', () => {
+    expect(normalizeResourceMirror(' https://mirror.example.com/npm-cdn/// ')).toBe(
+      'https://mirror.example.com/npm-cdn',
+    );
+  });
+
+  it.each([
+    '',
+    'not a URL',
+    'http://mirror.example.com',
+    'https://user:pass@mirror.example.com',
+    'https://mirror.example.com?token=secret',
+    'https://mirror.example.com/#fragment',
+  ])('rejects unsafe mirror base %s', (mirror) => {
+    expect(() => normalizeResourceMirror(mirror)).toThrow();
+  });
+});
+
+describe('getTypstRuntimeAssetUrls', () => {
+  it('resolves every built-in asset through npm routes on the selected mirror', () => {
+    const urls = getTypstRuntimeAssetUrls('https://mirror.example.com/npm/');
+
+    expect(urls.compilerWasm).toEqual({
+      url: 'https://mirror.example.com/npm/@myriaddreamin/typst-ts-web-compiler@0.7.0/pkg/typst_ts_web_compiler_bg.wasm',
+    });
+    expect(urls.rendererWasm).toEqual({
+      url: 'https://mirror.example.com/npm/@myriaddreamin/typst-ts-renderer@0.7.0/pkg/typst_ts_renderer_bg.wasm',
+    });
+    expect(urls.fonts).toContainEqual({
+      url: 'https://mirror.example.com/npm/@typst-wasm/fonts@1.0.0/dist/files/LibertinusSerif-Regular.otf',
+    });
+    expect(urls.fonts).toContainEqual({
+      url: 'https://mirror.example.com/npm/@betteroffice/fonts-cjk@0.1.0/assets/NotoSerifSC-Regular.otf',
+    });
+    expect(urls.fonts.every((asset) => asset.url.startsWith('https://mirror.example.com/npm/'))).toBe(true);
+  });
+
+  it('resolves package tarballs and entries for a standard NPM Registry', () => {
+    const urls = getTypstRuntimeAssetUrls(
+      'https://artifacts.example.com/repository/typst/',
+      'npm-registry',
+    );
+
+    expect(urls.rendererWasm).toEqual({
+      url: 'https://artifacts.example.com/repository/typst/@myriaddreamin/typst-ts-renderer/-/typst-ts-renderer-0.7.0.tgz',
+      archivePath: 'package/pkg/typst_ts_renderer_bg.wasm',
+    });
+    expect(urls.fonts).toContainEqual({
+      url: 'https://artifacts.example.com/repository/typst/@betteroffice/fonts-cjk/-/fonts-cjk-0.1.0.tgz',
+      archivePath: 'package/assets/NotoSerifSC-Regular.otf',
+    });
+  });
+});
 
 describe('normalizeAssetPath', () => {
   it('normalizes paths relative to the assets directory', () => {

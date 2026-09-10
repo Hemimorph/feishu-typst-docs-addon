@@ -11,6 +11,7 @@ import {
 } from './fonts';
 import {
   isImageAssetReferenced,
+  getConfiguredTypstRuntimeAssetUrls,
   normalizeAssetPath,
   type EmbeddedFontAsset,
   type EmbeddedImageAsset,
@@ -18,11 +19,9 @@ import {
   type TypstImageAsset,
 } from './model';
 import { normalizeFontBytes } from './woff';
+import { loadRuntimeAssetBytes, runtimeAssetKey } from './npm-archive';
+import type { TypstRuntimeAssetLocation } from './model';
 
-const COMPILER_WASM_URL =
-  'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-web-compiler@0.7.0/pkg/typst_ts_web_compiler_bg.wasm';
-const RENDERER_WASM_URL =
-  'https://cdn.jsdelivr.net/npm/@myriaddreamin/typst-ts-renderer@0.7.0/pkg/typst_ts_renderer_bg.wasm';
 const MAIN_FILE = '/project/main.typ';
 
 const byteCache = new Map<string, Promise<Uint8Array>>();
@@ -117,15 +116,17 @@ const loadEmbeddedFontBytes = (font: EmbeddedFontAsset): Promise<Uint8Array> => 
 };
 
 const preloadNormalizedFonts = (
+  builtInFonts: TypstRuntimeAssetLocation[],
   urls: string[],
   embeddedFonts: EmbeddedFontAsset[],
 ): TypstSnippetProvider => {
   const embeddedByKey = new Map(embeddedFonts.map((font) => [embeddedFontKey(font), font]));
+  const builtInByKey = new Map(builtInFonts.map((font) => [runtimeAssetKey(font), font]));
   return {
     key: 'feishu-normalized-fonts',
     forRoles: ['compiler'],
     provides: [
-      loadFonts([...urls, ...embeddedByKey.keys()], {
+      loadFonts([...builtInByKey.keys(), ...urls, ...embeddedByKey.keys()], {
         assets: false,
         fetcher: async (input) => {
           const source =
@@ -135,9 +136,12 @@ const preloadNormalizedFonts = (
                 ? input.toString()
                 : input.url;
           const embedded = embeddedByKey.get(source);
+          const builtIn = builtInByKey.get(source);
           const bytes = embedded
             ? await loadEmbeddedFontBytes(embedded)
-            : await loadFontBytes(source);
+            : builtIn
+              ? await normalizeFontBytes(await loadRuntimeAssetBytes(builtIn))
+              : await loadFontBytes(source);
           return new Response(bytes.slice().buffer);
         },
       }),
@@ -154,14 +158,16 @@ class TypstRuntime {
     private readonly fonts: string[],
     private readonly embeddedFonts: EmbeddedFontAsset[],
   ) {
+    const assets = getConfiguredTypstRuntimeAssetUrls();
     this.snippet = new TypstSnippet();
-    this.snippet.setCompilerInitOptions({ getModule: () => COMPILER_WASM_URL });
-    this.snippet.setRendererInitOptions({ getModule: () => RENDERER_WASM_URL });
+    this.snippet.setCompilerInitOptions({
+      getModule: () => loadRuntimeAssetBytes(assets.compilerWasm),
+    });
+    this.snippet.setRendererInitOptions({
+      getModule: () => loadRuntimeAssetBytes(assets.rendererWasm),
+    });
     this.snippet.setMainFilePath(MAIN_FILE);
-    this.snippet.use(TypstSnippet.preloadFontAssets({ assets: ['text', 'cjk'] }));
-    if (fonts.length || embeddedFonts.length) {
-      this.snippet.use(preloadNormalizedFonts(fonts, embeddedFonts));
-    }
+    this.snippet.use(preloadNormalizedFonts(assets.fonts, fonts, embeddedFonts));
   }
 
   private run<T>(record: TypstAddonRecord, produce: () => Promise<T>): Promise<T> {

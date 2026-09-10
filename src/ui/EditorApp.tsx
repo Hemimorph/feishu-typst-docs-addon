@@ -636,7 +636,7 @@ export const EditorApp = () => {
           <div className="section-heading">
             <div>
               <h2>字体</h2>
-              <p>每行一个 jsDelivr 字体 URL；支持 TTF、OTF、TTC 和 WOFF，暂不支持 WOFF2。</p>
+              <p>每行一个 HTTPS 字体 URL；支持 TTF、OTF、TTC 和 WOFF，暂不支持 WOFF2。</p>
             </div>
             <div className="resource-actions">
               <label className="button file-button">
@@ -666,7 +666,7 @@ export const EditorApp = () => {
           <textarea
             className="url-list"
             value={fontsText}
-            placeholder="https://cdn.jsdelivr.net/gh/owner/repo@version/fonts/example.otf"
+            placeholder="https://npm-cdn.example.com/npm/font-package@version/fonts/example.otf"
             onChange={(event) => updateFonts(event.target.value)}
           />
           {draft.embeddedFonts.length ? (
