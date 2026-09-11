@@ -12,6 +12,7 @@ import {
   mergeFontCatalog,
   type AvailableTypstFont,
 } from './fonts';
+import { loadNixOutPathFonts } from './nix-fonts';
 import {
   isImageAssetReferenced,
   getConfiguredTypstRuntimeAssetUrls,
@@ -33,11 +34,11 @@ const MAIN_FILE = '/project/main.typ';
 
 const byteCache = new Map<string, Promise<Uint8Array>>();
 const fontByteCache = new Map<string, Promise<Uint8Array>>();
-interface LoadedRemoteFont {
+interface LoadedFont {
   source: string;
   bytes: Uint8Array;
 }
-const remoteFontCache = new Map<string, Promise<LoadedRemoteFont[]>>();
+const fontSourceCache = new Map<string, Promise<LoadedFont[]>>();
 
 const loadRemoteBytes = (url: string): Promise<Uint8Array> => {
   const cacheKey = `remote:${url}`;
@@ -99,11 +100,22 @@ const loadEmbeddedImageBytes = (asset: EmbeddedImageAsset): Promise<Uint8Array> 
   return task;
 };
 
-const loadRemoteFonts = (url: string): Promise<LoadedRemoteFont[]> => {
-  const existing = remoteFontCache.get(url);
+const loadFontSource = (source: string): Promise<LoadedFont[]> => {
+  const existing = fontSourceCache.get(source);
   if (existing) return existing;
 
   const task = (async () => {
+    if (source.trim().startsWith('/nix/store/')) {
+      const files = await loadNixOutPathFonts(source);
+      return Promise.all(
+        files.map(async (file) => ({
+          source: `${source.trim()}#${encodeURIComponent(file.path)}`,
+          bytes: await normalizeFontBytes(file.bytes),
+        })),
+      );
+    }
+
+    const url = source;
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') {
       throw new Error(`字体只支持 HTTPS URL：${url}`);
@@ -121,9 +133,9 @@ const loadRemoteFonts = (url: string): Promise<LoadedRemoteFont[]> => {
     );
   })();
 
-  remoteFontCache.set(url, task);
+  fontSourceCache.set(source, task);
   task.catch(() => {
-    if (remoteFontCache.get(url) === task) remoteFontCache.delete(url);
+    if (fontSourceCache.get(source) === task) fontSourceCache.delete(source);
   });
   return task;
 };
@@ -161,7 +173,7 @@ const preloadNormalizedFonts = (
               },
             ]),
           ),
-          Promise.all(urls.map(loadRemoteFonts)),
+          Promise.all(urls.map(loadFontSource)),
           Promise.all(
             embeddedFonts.map(async (font) => [
               { source: embeddedFontKey(font), bytes: await loadEmbeddedFontBytes(font) },
@@ -264,9 +276,9 @@ class TypstRuntime {
       const resolver = await this.snippet.getFontResolver();
       const customFonts: AvailableTypstFont[] = [];
 
-      for (const url of this.fonts) {
+      for (const source of this.fonts) {
         try {
-          const files = await loadRemoteFonts(url);
+          const files = await loadFontSource(source);
           const catalogs = await Promise.all(
             files.map(async (font) => {
               const info = await resolver.getFontInfo(font.bytes);
@@ -277,7 +289,7 @@ class TypstRuntime {
           if (!parsed.length) throw new Error('资源中没有可识别的字体字族');
           customFonts.push(...parsed);
         } catch (reason) {
-          throw new Error(`字体 ${url} 加载失败：${errorMessage(reason)}`);
+          throw new Error(`字体 ${source} 加载失败：${errorMessage(reason)}`);
         }
       }
 
@@ -338,7 +350,7 @@ export const disposeTypstRuntime = (): void => {
   runtime = undefined;
   byteCache.clear();
   fontByteCache.clear();
-  remoteFontCache.clear();
+  fontSourceCache.clear();
   resetRuntimeAssetLoaderState();
 };
 

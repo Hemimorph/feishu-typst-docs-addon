@@ -58,7 +58,7 @@ const suggestedRemotePath = (url: string): string => {
   }
 };
 
-const parseFontUrls = (value: string): string[] =>
+const parseFontSources = (value: string): string[] =>
   value
     .split('\n')
     .map((font) => font.trim())
@@ -257,7 +257,7 @@ export const EditorApp = () => {
           const customFamilyCount = catalog.filter((font) => font.customUrls.length).length;
           setFontMessage({
             type: 'success',
-            text: `字体已应用：扫描 ${fonts.length} 个远程资源、${embeddedFonts.length} 个嵌入文件，识别出 ${customFamilyCount} 个自定义字族。`,
+            text: `字体已应用：扫描 ${fonts.length} 个字体资源、${embeddedFonts.length} 个嵌入文件，识别出 ${customFamilyCount} 个自定义字族。`,
           });
         }
       })
@@ -277,7 +277,7 @@ export const EditorApp = () => {
     const currentRequest = ++quotaRequestId.current;
     setQuotaCalculating(true);
     const timer = window.setTimeout(() => {
-      compressedRecordBytes({ ...draft, fonts: parseFontUrls(fontsText) })
+      compressedRecordBytes({ ...draft, fonts: parseFontSources(fontsText) })
         .then((bytes) => {
           if (quotaRequestId.current !== currentRequest) return;
           setRecordDataBytes(bytes);
@@ -332,7 +332,7 @@ export const EditorApp = () => {
         const asset = { id: makeAssetId(), ...encoded };
         await ensureCompressedRecordQuota({
           ...draft,
-          fonts: parseFontUrls(fontsText),
+          fonts: parseFontSources(fontsText),
           embeddedFonts: [...draft.embeddedFonts, ...pending, asset],
         });
         if (!mountedRef.current) return;
@@ -392,7 +392,7 @@ export const EditorApp = () => {
         };
         await ensureCompressedRecordQuota({
           ...draft,
-          fonts: parseFontUrls(fontsText),
+          fonts: parseFontSources(fontsText),
           images: [...draft.images, ...pending, asset],
         });
         if (!mountedRef.current) return;
@@ -560,7 +560,7 @@ export const EditorApp = () => {
   };
 
   const applyFontsToPreview = () => {
-    setDraft((current) => ({ ...current, fonts: parseFontUrls(fontsText) }));
+    setDraft((current) => ({ ...current, fonts: parseFontSources(fontsText) }));
     setFontReload((current) => current + 1);
     setMessage(undefined);
     setFontMessage(undefined);
@@ -571,7 +571,7 @@ export const EditorApp = () => {
     setSaving(true);
     setMessage(undefined);
     try {
-      const fonts = parseFontUrls(fontsText);
+      const fonts = parseFontSources(fontsText);
       const images = normalizeImageAssets(draft.images);
       const nextRecord = { ...draft, fonts, images };
       const saved = await saveAddonRecord(nextRecord, baseVersion);
@@ -691,7 +691,7 @@ export const EditorApp = () => {
           <div className="section-heading">
             <div>
               <h2>字体</h2>
-              <p>每行一个 HTTPS 字体或压缩包 URL；ZIP、tar.gz/tgz 中的字体会被全部扫描，暂不支持 WOFF2。</p>
+              <p>每行一个 HTTPS 字体资源或 Nix outPath；压缩包和 Nix 输出中的字体会被全部扫描，暂不支持 WOFF2。</p>
             </div>
             <div className="resource-actions">
               <label className="button file-button">
@@ -721,7 +721,7 @@ export const EditorApp = () => {
           <textarea
             className="url-list"
             value={fontsText}
-            placeholder={'https://cdn.example.com/fonts/example.otf\nhttps://cdn.example.com/fonts/family.zip'}
+            placeholder={'/nix/store/0123456789abcdfghijklmnpqrsvwxyz-font-name-version\nhttps://cdn.example.com/fonts/family.zip'}
             onChange={(event) => updateFonts(event.target.value)}
           />
           {draft.embeddedFonts.length ? (
