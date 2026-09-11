@@ -24,6 +24,7 @@ import {
 } from './model';
 import { normalizeFontBytes } from './woff';
 import {
+  downloadBytesWithProgress,
   loadRuntimeAssetBytes,
   resetRuntimeAssetLoaderState,
   runtimeAssetKey,
@@ -120,11 +121,10 @@ const loadFontSource = (source: string): Promise<LoadedFont[]> => {
     if (parsed.protocol !== 'https:') {
       throw new Error(`字体只支持 HTTPS URL：${url}`);
     }
-    const response = await fetch(parsed.toString(), { mode: 'cors' });
-    if (!response.ok) {
-      throw new Error(`字体请求失败（${response.status}）：${url}`);
-    }
-    const files = await extractFontFiles(new Uint8Array(await response.arrayBuffer()), url);
+    const downloaded = await downloadBytesWithProgress(parsed.toString(), {
+      errorLabel: '字体请求失败',
+    });
+    const files = await extractFontFiles(downloaded, url);
     return Promise.all(
       files.map(async (file) => ({
         source: files.length === 1 ? url : `${url}#${encodeURIComponent(file.path)}`,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getTypstRuntimeAssetUrls } from './model';
 import {
   RUNTIME_CACHE_NAME,
+  downloadBytesWithProgress,
   extractTarEntry,
   loadRuntimeAssetBytes,
   resetRuntimeAssetLoaderState,
@@ -93,6 +94,30 @@ describe('runtime download progress', () => {
     await expect(loadRuntimeAssetBytes({ url: 'https://example.com/progress.bin' })).resolves.toEqual(
       new Uint8Array([1, 2, 3, 4]),
     );
+    unsubscribe();
+
+    expect(snapshots.some((progress) => progress.active && progress.totalBytes === 4)).toBe(true);
+    expect(snapshots.some((progress) => progress.loadedBytes === 4)).toBe(true);
+    expect(snapshots[snapshots.length - 1].active).toBe(false);
+  });
+
+  it('uses the same progress stream for non-runtime resources such as fonts', async () => {
+    const snapshots: RuntimeDownloadProgress[] = [];
+    const unsubscribe = subscribeRuntimeDownloadProgress((progress) => snapshots.push(progress));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(new Uint8Array([79, 84, 84, 79]), {
+          headers: { 'content-length': '4' },
+        }),
+      ),
+    );
+
+    await expect(
+      downloadBytesWithProgress('https://example.com/custom.otf', {
+        errorLabel: '字体请求失败',
+      }),
+    ).resolves.toEqual(new Uint8Array([79, 84, 84, 79]));
     unsubscribe();
 
     expect(snapshots.some((progress) => progress.active && progress.totalBytes === 4)).toBe(true);

@@ -33,6 +33,12 @@ interface ActiveDownload {
   totalBytes?: number;
 }
 
+export interface ProgressDownloadOptions {
+  errorLabel: string;
+  maximumBytes?: number;
+  maximumError?: string;
+}
+
 const activeDownloads = new Map<number, ActiveDownload>();
 const progressListeners = new Set<(progress: RuntimeDownloadProgress) => void>();
 let nextDownloadId = 0;
@@ -153,26 +159,28 @@ const storeResponse = async (url: string, response: Response): Promise<void> => 
   }
 };
 
-const fetchBytes = async (
+const fetchNetworkBytesWithProgress = async (
   url: string,
-  errorLabel: string,
-  forceNetwork = false,
-): Promise<LoadedBytes> => {
-  if (!forceNetwork) {
-    const cached = await readCachedBytes(url);
-    if (cached) return { bytes: cached, fromPersistentCache: true };
-  }
-
+  options: ProgressDownloadOptions,
+  handleResponse?: (response: Response) => Promise<void>,
+): Promise<Uint8Array> => {
   const downloadId = ++nextDownloadId;
   activeDownloads.set(downloadId, { loadedBytes: 0 });
   notifyDownloadProgress();
 
   try {
     const response = await fetch(runtimeRequest(url));
-    if (!response.ok) throw new Error(`${errorLabel}（${response.status}）：${url}`);
-    const cacheWrite = storeResponse(url, response.clone());
+    if (!response.ok) throw new Error(`${options.errorLabel}（${response.status}）：${url}`);
+    const responseTask = handleResponse?.(response.clone());
 
     const contentLength = Number(response.headers.get('content-length'));
+    if (
+      options.maximumBytes !== undefined &&
+      Number.isFinite(contentLength) &&
+      contentLength > options.maximumBytes
+    ) {
+      throw new Error(options.maximumError ?? `${options.errorLabel}超过大小上限`);
+    }
     const current = activeDownloads.get(downloadId);
     if (current && Number.isFinite(contentLength) && contentLength > 0) {
       current.totalBytes = contentLength;
@@ -181,10 +189,13 @@ const fetchBytes = async (
 
     if (!response.body) {
       const bytes = new Uint8Array(await response.arrayBuffer());
+      if (options.maximumBytes !== undefined && bytes.byteLength > options.maximumBytes) {
+        throw new Error(options.maximumError ?? `${options.errorLabel}超过大小上限`);
+      }
       activeDownloads.set(downloadId, { loadedBytes: bytes.byteLength, totalBytes: bytes.byteLength });
       notifyDownloadProgress();
-      await cacheWrite;
-      return { bytes, fromPersistentCache: false };
+      await responseTask;
+      return bytes;
     }
 
     const chunks: Uint8Array[] = [];
@@ -195,6 +206,10 @@ const fetchBytes = async (
       if (done) break;
       chunks.push(value);
       loadedBytes += value.byteLength;
+      if (options.maximumBytes !== undefined && loadedBytes > options.maximumBytes) {
+        await reader.cancel();
+        throw new Error(options.maximumError ?? `${options.errorLabel}超过大小上限`);
+      }
       const download = activeDownloads.get(downloadId);
       if (download) {
         download.loadedBytes = loadedBytes;
@@ -211,12 +226,35 @@ const fetchBytes = async (
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    await cacheWrite;
-    return { bytes, fromPersistentCache: false };
+    await responseTask;
+    return bytes;
   } finally {
     activeDownloads.delete(downloadId);
     notifyDownloadProgress();
   }
+};
+
+export const downloadBytesWithProgress = (
+  url: string,
+  options: ProgressDownloadOptions,
+): Promise<Uint8Array> => fetchNetworkBytesWithProgress(url, options);
+
+const fetchBytes = async (
+  url: string,
+  errorLabel: string,
+  forceNetwork = false,
+): Promise<LoadedBytes> => {
+  if (!forceNetwork) {
+    const cached = await readCachedBytes(url);
+    if (cached) return { bytes: cached, fromPersistentCache: true };
+  }
+
+  const bytes = await fetchNetworkBytesWithProgress(
+    url,
+    { errorLabel },
+    (response) => storeResponse(url, response),
+  );
+  return { bytes, fromPersistentCache: false };
 };
 
 const ownedBuffer = (bytes: Uint8Array): ArrayBuffer => {

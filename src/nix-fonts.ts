@@ -1,5 +1,6 @@
 import { decompress as decompressZstd } from 'fzstd';
 import type { ExtractedFontFile } from './font-archive';
+import { downloadBytesWithProgress } from './npm-archive';
 
 const NIX_CACHE_ORIGIN = 'https://cache.nixos.org';
 const NIX_STORE_PATH = /^\/nix\/store\/([0123456789abcdfghijklmnpqrsvwxyz]{32})-([^/\0]+)$/;
@@ -12,6 +13,8 @@ const MAX_NAR_BYTES = 512 * 1024 * 1024;
 const MAX_FONT_BYTES = 256 * 1024 * 1024;
 const MAX_NAR_NODES = 100_000;
 const MAX_NAR_DEPTH = 128;
+const MAX_STORE_PATHS = 64;
+const MAX_SYMLINKS = 64;
 
 interface NixNarInfo {
   storePath: string;
@@ -21,6 +24,16 @@ interface NixNarInfo {
   fileSize: number;
   narHash: string;
   narSize: number;
+}
+
+type NarNode =
+  | { type: 'regular'; contents: Uint8Array }
+  | { type: 'symlink'; target: string }
+  | { type: 'directory'; entries: Map<string, NarNode> };
+
+interface NixStoreLocation {
+  storePath: string;
+  path: string[];
 }
 
 const ownedBuffer = (bytes: Uint8Array): ArrayBuffer => {
@@ -224,6 +237,64 @@ class NarReader {
   }
 }
 
+const parseNixNar = (nar: Uint8Array): NarNode => {
+  const reader = new NarReader(nar);
+  let nodeCount = 0;
+
+  const readNode = (depth: number): NarNode => {
+    nodeCount += 1;
+    if (nodeCount > MAX_NAR_NODES) throw new Error('NAR 文件条目过多');
+    if (depth > MAX_NAR_DEPTH) throw new Error('NAR 目录层级过深');
+
+    reader.expect('(');
+    reader.expect('type');
+    const type = reader.readText();
+
+    if (type === 'regular') {
+      let field = reader.readText();
+      if (field === 'executable') {
+        reader.expect('');
+        field = reader.readText();
+      }
+      if (field !== 'contents') throw new Error('NAR 普通文件缺少 contents');
+      const contents = reader.readBytes();
+      reader.expect(')');
+      return { type, contents };
+    }
+
+    if (type === 'symlink') {
+      reader.expect('target');
+      const target = reader.readText();
+      reader.expect(')');
+      if (!target || target.includes('\0')) throw new Error('NAR 符号链接目标无效');
+      return { type, target };
+    }
+
+    if (type !== 'directory') throw new Error(`NAR 包含不支持的节点类型：${type}`);
+    const entries = new Map<string, NarNode>();
+    while (true) {
+      const field = reader.readText();
+      if (field === ')') return { type, entries };
+      if (field !== 'entry') throw new Error('NAR 目录条目无效');
+      reader.expect('(');
+      reader.expect('name');
+      const name = reader.readText();
+      if (!name || name === '.' || name === '..' || /[/\\\0]/.test(name)) {
+        throw new Error('NAR 目录条目名称不安全');
+      }
+      if (entries.has(name)) throw new Error('NAR 目录包含重复条目');
+      reader.expect('node');
+      entries.set(name, readNode(depth + 1));
+      reader.expect(')');
+    }
+  };
+
+  reader.expect('nix-archive-1');
+  const root = readNode(0);
+  if (!reader.done) throw new Error('NAR 根节点之后存在多余数据');
+  return root;
+};
+
 const fontMagic = (bytes: Uint8Array): 'supported' | 'woff2' | undefined => {
   if (bytes.byteLength < 4) return undefined;
   const signature = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
@@ -245,75 +316,71 @@ export const extractNixNarFonts = (
   nar: Uint8Array,
   rootName = 'nix-output',
 ): ExtractedFontFile[] => {
-  const reader = new NarReader(nar);
+  const root = parseNixNar(nar);
   const fonts: ExtractedFontFile[] = [];
   let ignoredWoff2 = 0;
   let fontBytes = 0;
-  let nodeCount = 0;
 
-  const visit = (path: string, depth: number): void => {
-    nodeCount += 1;
-    if (nodeCount > MAX_NAR_NODES) throw new Error('NAR 文件条目过多');
-    if (depth > MAX_NAR_DEPTH) throw new Error('NAR 目录层级过深');
-
-    reader.expect('(');
-    reader.expect('type');
-    const type = reader.readText();
-
-    if (type === 'regular') {
-      let field = reader.readText();
-      if (field === 'executable') {
-        reader.expect('');
-        field = reader.readText();
-      }
-      if (field !== 'contents') throw new Error('NAR 普通文件缺少 contents');
-      const contents = reader.readBytes();
-      reader.expect(')');
-
+  const visit = (node: NarNode, path: string): void => {
+    if (node.type === 'regular') {
       if (WOFF2_PATH.test(path)) {
         ignoredWoff2 += 1;
         return;
       }
       if (!FONT_PATH.test(path)) return;
-      if (fontMagic(contents) !== 'supported') {
+      if (fontMagic(node.contents) !== 'supported') {
         throw new Error(`NAR 中的文件不是有效字体：${path}`);
       }
-      fontBytes += contents.byteLength;
+      fontBytes += node.contents.byteLength;
       if (fontBytes > MAX_FONT_BYTES) throw new Error('NAR 中的字体数据超过 256 MiB 上限');
-      fonts.push({ path, bytes: contents.slice() });
+      fonts.push({ path, bytes: node.contents.slice() });
       return;
     }
 
-    if (type === 'symlink') {
-      reader.expect('target');
-      reader.readBytes();
-      reader.expect(')');
-      return;
-    }
-
-    if (type !== 'directory') throw new Error(`NAR 包含不支持的节点类型：${type}`);
-    while (true) {
-      const field = reader.readText();
-      if (field === ')') return;
-      if (field !== 'entry') throw new Error('NAR 目录条目无效');
-      reader.expect('(');
-      reader.expect('name');
-      const name = reader.readText();
-      if (!name || name === '.' || name === '..' || /[/\\\0]/.test(name)) {
-        throw new Error('NAR 目录条目名称不安全');
+    if (node.type === 'directory') {
+      for (const [name, child] of node.entries) {
+        visit(child, path ? `${path}/${name}` : name);
       }
-      reader.expect('node');
-      visit(path ? `${path}/${name}` : name, depth + 1);
-      reader.expect(')');
     }
   };
 
-  reader.expect('nix-archive-1');
-  visit(rootName, 0);
-  if (!reader.done) throw new Error('NAR 根节点之后存在多余数据');
+  visit(root, rootName);
   if (fonts.length) return fonts;
   if (ignoredWoff2) throw new Error('Nix 输出中只有 WOFF2 字体；当前运行时不支持 WOFF2');
   throw new Error('Nix 输出中没有找到 TTF、OTF、TTC 或 WOFF 字体');
+};
+
+const normalizeAbsolutePath = (path: string): string => {
+  if (!path.startsWith('/')) throw new Error('NAR 符号链接目标不是绝对路径');
+  const normalized: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (!normalized.length) throw new Error('NAR 符号链接目标越出根目录');
+      normalized.pop();
+      continue;
+    }
+    if (part.includes('\0')) throw new Error('NAR 符号链接目标无效');
+    normalized.push(part);
+  }
+  return `/${normalized.join('/')}`;
+};
+
+const parseNixStoreLocation = (path: string): NixStoreLocation => {
+  const normalized = normalizeAbsolutePath(path);
+  const parts = normalized.slice(1).split('/');
+  if (parts[0] !== 'nix' || parts[1] !== 'store' || !parts[2]) {
+    throw new Error(`NAR 符号链接目标不在 Nix store 中：${normalized}`);
+  }
+  const storePath = `/nix/store/${parts[2]}`;
+  parseNixOutPath(storePath);
+  return { storePath, path: parts.slice(3) };
+};
+
+const resolveSymlinkTarget = (linkPath: string, target: string): string => {
+  if (target.startsWith('/')) return normalizeAbsolutePath(target);
+  const separator = linkPath.lastIndexOf('/');
+  return normalizeAbsolutePath(`${linkPath.slice(0, separator)}/${target}`);
 };
 
 const fetchBytes = async (url: string, label: string, maximum: number): Promise<Uint8Array> => {
@@ -321,35 +388,146 @@ const fetchBytes = async (url: string, label: string, maximum: number): Promise<
     maximum >= 1024 * 1024
       ? `${Math.floor(maximum / 1024 / 1024)} MiB`
       : `${Math.floor(maximum / 1024)} KiB`;
-  const response = await fetch(
-    new Request(url, { method: 'GET', mode: 'cors', credentials: 'omit' }),
-  );
-  if (!response.ok) throw new Error(`${label}请求失败（${response.status}）`);
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > maximum) {
-    throw new Error(`${label}超过 ${limit} 上限`);
+  return downloadBytesWithProgress(url, {
+    errorLabel: `${label}请求失败`,
+    maximumBytes: maximum,
+    maximumError: `${label}超过 ${limit} 上限`,
+  });
+};
+
+const extractLinkedNixFonts = async (
+  initialStorePath: string,
+  rootName: string,
+  loadStore: (storePath: string) => Promise<NarNode>,
+): Promise<ExtractedFontFile[]> => {
+  const fonts: ExtractedFontFile[] = [];
+  let ignoredWoff2 = 0;
+  let fontBytes = 0;
+  let visitedNodes = 0;
+
+  interface ResolvedNode {
+    node: NarNode;
+    path: string;
+    followedLinks: Set<string>;
   }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > maximum) {
-    throw new Error(`${label}超过 ${limit} 上限`);
-  }
-  return bytes;
+
+  const resolveNode = async (
+    absolutePath: string,
+    followedLinks: Set<string>,
+  ): Promise<ResolvedNode> => {
+    const location = parseNixStoreLocation(absolutePath);
+    let node = await loadStore(location.storePath);
+    let currentPath = location.storePath;
+
+    for (let index = 0; ; index += 1) {
+      if (node.type === 'symlink') {
+        if (followedLinks.size >= MAX_SYMLINKS) {
+          throw new Error('NAR 符号链接层级过深');
+        }
+        if (followedLinks.has(currentPath)) throw new Error('NAR 符号链接形成循环');
+        const nextLinks = new Set(followedLinks);
+        nextLinks.add(currentPath);
+        const target = resolveSymlinkTarget(currentPath, node.target);
+        const remaining = location.path.slice(index).join('/');
+        return resolveNode(remaining ? `${target}/${remaining}` : target, nextLinks);
+      }
+
+      if (index === location.path.length) {
+        return { node, path: currentPath, followedLinks };
+      }
+      if (node.type !== 'directory') {
+        throw new Error(`NAR 符号链接目标不是目录：${currentPath}`);
+      }
+
+      const name = location.path[index];
+      const child = node.entries.get(name);
+      if (!child) throw new Error(`NAR 符号链接目标不存在：${absolutePath}`);
+      node = child;
+      currentPath = `${currentPath}/${name}`;
+    }
+  };
+
+  const visit = async (
+    absolutePath: string,
+    outputPath: string,
+    followedLinks: Set<string>,
+  ): Promise<void> => {
+    visitedNodes += 1;
+    if (visitedNodes > MAX_NAR_NODES) throw new Error('Nix 字体输出展开后的文件条目过多');
+
+    const resolved = await resolveNode(absolutePath, followedLinks);
+    if (resolved.node.type === 'regular') {
+      if (WOFF2_PATH.test(outputPath)) {
+        ignoredWoff2 += 1;
+        return;
+      }
+      if (!FONT_PATH.test(outputPath)) return;
+      if (fontMagic(resolved.node.contents) !== 'supported') {
+        throw new Error(`NAR 中的文件不是有效字体：${outputPath}`);
+      }
+      fontBytes += resolved.node.contents.byteLength;
+      if (fontBytes > MAX_FONT_BYTES) throw new Error('NAR 中的字体数据超过 256 MiB 上限');
+      fonts.push({ path: outputPath, bytes: resolved.node.contents.slice() });
+      return;
+    }
+
+    if (resolved.node.type !== 'directory') {
+      throw new Error(`NAR 符号链接无法解析：${resolved.path}`);
+    }
+
+    for (const name of resolved.node.entries.keys()) {
+      await visit(
+        `${resolved.path}/${name}`,
+        outputPath ? `${outputPath}/${name}` : name,
+        new Set(resolved.followedLinks),
+      );
+    }
+  };
+
+  await visit(initialStorePath, rootName, new Set());
+  if (fonts.length) return fonts;
+  if (ignoredWoff2) throw new Error('Nix 输出中只有 WOFF2 字体；当前运行时不支持 WOFF2');
+  throw new Error('Nix 输出中没有找到 TTF、OTF、TTC 或 WOFF 字体');
 };
 
 export const loadNixOutPathFonts = async (outPath: string): Promise<ExtractedFontFile[]> => {
   const parsedPath = parseNixOutPath(outPath);
-  const narInfoBytes = await fetchBytes(
-    nixNarInfoUrl(parsedPath.storePath),
-    'Nix narinfo ',
-    MAX_NARINFO_BYTES,
-  );
-  const info = parseNixNarInfo(new TextDecoder().decode(narInfoBytes), parsedPath.storePath);
-  const compressed = await fetchBytes(info.url, 'Nix NAR ', MAX_DOWNLOAD_BYTES);
-  if (compressed.byteLength !== info.fileSize) throw new Error('Nix NAR 下载大小不一致');
-  await verifySha256(compressed, info.fileHash, 'FileHash');
+  const stores = new Map<string, Promise<NarNode>>();
+  let totalDownloadBytes = 0;
+  let totalNarBytes = 0;
 
-  const nar = await decompressNixNar(compressed, info.compression);
-  if (nar.byteLength !== info.narSize) throw new Error('Nix NAR 解压大小不一致');
-  await verifySha256(nar, info.narHash, 'NarHash');
-  return extractNixNarFonts(nar, parsedPath.name);
+  const loadStore = (storePath: string): Promise<NarNode> => {
+    const existing = stores.get(storePath);
+    if (existing) return existing;
+    if (stores.size >= MAX_STORE_PATHS) throw new Error('Nix 字体输出引用的 store path 过多');
+
+    const loading = (async (): Promise<NarNode> => {
+      const narInfoBytes = await fetchBytes(
+        nixNarInfoUrl(storePath),
+        'Nix narinfo ',
+        MAX_NARINFO_BYTES,
+      );
+      const info = parseNixNarInfo(new TextDecoder().decode(narInfoBytes), storePath);
+      totalDownloadBytes += info.fileSize;
+      totalNarBytes += info.narSize;
+      if (totalDownloadBytes > MAX_DOWNLOAD_BYTES) {
+        throw new Error('Nix 字体输出及其链接目标的下载总大小超过 256 MiB 上限');
+      }
+      if (totalNarBytes > MAX_NAR_BYTES) {
+        throw new Error('Nix 字体输出及其链接目标的解压总大小超过 512 MiB 上限');
+      }
+      const compressed = await fetchBytes(info.url, 'Nix NAR ', MAX_DOWNLOAD_BYTES);
+      if (compressed.byteLength !== info.fileSize) throw new Error('Nix NAR 下载大小不一致');
+      await verifySha256(compressed, info.fileHash, 'FileHash');
+
+      const nar = await decompressNixNar(compressed, info.compression);
+      if (nar.byteLength !== info.narSize) throw new Error('Nix NAR 解压大小不一致');
+      await verifySha256(nar, info.narHash, 'NarHash');
+      return parseNixNar(nar);
+    })();
+    stores.set(storePath, loading);
+    return loading;
+  };
+
+  return extractLinkedNixFonts(parsedPath.storePath, parsedPath.name, loadStore);
 };

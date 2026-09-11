@@ -171,13 +171,15 @@ export const TypstPreview = ({
           dangerouslySetInnerHTML={{ __html: svg }}
         />
       ) : null}
-      {!svg && !loading ? <div className="preview-empty">{emptyLabel}</div> : null}
-      {loading ? (
+      {!svg && !loading && !download.active ? (
+        <div className="preview-empty">{emptyLabel}</div>
+      ) : null}
+      {loading || download.active ? (
         <div className={`preview-loading${download.active ? ' downloading' : ''}`}>
           <div className="preview-loading-label">
             {download.active ? (
               <>
-                <span>正在下载 Typst 资源</span>
+                <span>正在下载 Typst 资源或字体</span>
                 <span>
                   {formatBytes(download.loadedBytes)}
                   {download.totalBytes ? ` / ${formatBytes(download.totalBytes)}` : ''}
@@ -191,7 +193,7 @@ export const TypstPreview = ({
             <div
               className={`runtime-download-track${downloadPercent === undefined ? ' indeterminate' : ''}`}
               role="progressbar"
-              aria-label="Typst 运行时资源下载进度"
+              aria-label="Typst 资源和字体下载进度"
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={downloadPercent === undefined ? undefined : Math.round(downloadPercent)}

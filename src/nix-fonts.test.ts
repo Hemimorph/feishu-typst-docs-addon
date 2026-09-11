@@ -7,6 +7,10 @@ import {
   parseNixNarInfo,
   parseNixOutPath,
 } from './nix-fonts';
+import {
+  subscribeRuntimeDownloadProgress,
+  type RuntimeDownloadProgress,
+} from './npm-archive';
 
 const encode = (value: string) => new TextEncoder().encode(value);
 
@@ -38,6 +42,16 @@ const regular = (contents: Uint8Array): Uint8Array =>
     narString('regular'),
     narString('contents'),
     narString(contents),
+    narString(')'),
+  ]);
+
+const symlink = (target: string): Uint8Array =>
+  concat([
+    narString('('),
+    narString('type'),
+    narString('symlink'),
+    narString('target'),
+    narString(target),
     narString(')'),
   ]);
 
@@ -73,6 +87,8 @@ const toBase64 = (bytes: Uint8Array): string => {
 
 const HASH = '0123456789abcdfghijklmnpqrsvwxyz';
 const OUT_PATH = `/nix/store/${HASH}-demo-fonts-1.0`;
+const SOURCE_HASH = '11111111111111111111111111111111';
+const SOURCE_PATH = `/nix/store/${SOURCE_HASH}-shanggu-fonts-1.028-serif`;
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -196,6 +212,72 @@ describe('Nix cache loading', () => {
       { path: 'demo-fonts-1.0/Loaded.otf', bytes: fontBytes },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('follows font symlinks into another store path', async () => {
+    const progress: RuntimeDownloadProgress[] = [];
+    const unsubscribe = subscribeRuntimeDownloadProgress((value) => progress.push(value));
+    const fontBytes = font('ttcf', 'shanggu');
+    const outputNar = narArchive(
+      directory({
+        share: directory({
+          fonts: directory({
+            'ShangguSerif.ttc': symlink(
+              `${SOURCE_PATH}/share/fonts/truetype/ShangguSerif.ttc`,
+            ),
+          }),
+        }),
+      }),
+    );
+    const sourceNar = narArchive(
+      directory({
+        share: directory({
+          fonts: directory({
+            truetype: directory({
+              'ShangguSerif.ttc': regular(fontBytes),
+            }),
+          }),
+        }),
+      }),
+    );
+    const responses = new Map<string, Uint8Array>();
+
+    const addStore = async (storePath: string, nar: Uint8Array, narName: string) => {
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', nar.slice().buffer));
+      const fileHash = `sha256-${toBase64(digest)}`;
+      const narInfo = [
+        `StorePath: ${storePath}`,
+        `URL: nar/${narName}`,
+        'Compression: none',
+        `FileHash: ${fileHash}`,
+        `FileSize: ${nar.byteLength}`,
+        `NarHash: ${fileHash}`,
+        `NarSize: ${nar.byteLength}`,
+      ].join('\n');
+      responses.set(nixNarInfoUrl(storePath), encode(narInfo));
+      responses.set(`https://cache.nixos.org/nar/${narName}`, nar);
+    };
+    await addStore(OUT_PATH, outputNar, 'linked-output.nar');
+    await addStore(SOURCE_PATH, sourceNar, 'font-source.nar');
+
+    const fetchMock = vi.fn(async (request: Request) => {
+      const bytes = responses.get(request.url);
+      return bytes
+        ? new Response(bytes.slice().buffer, { status: 200 })
+        : new Response(undefined, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(loadNixOutPathFonts(OUT_PATH)).resolves.toEqual([
+      {
+        path: 'demo-fonts-1.0/share/fonts/ShangguSerif.ttc',
+        bytes: fontBytes,
+      },
+    ]);
+    unsubscribe();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(progress.some((value) => value.active && value.loadedBytes > 0)).toBe(true);
+    expect(progress[progress.length - 1].active).toBe(false);
   });
 
   it('rejects a downloaded NAR whose FileHash does not match', async () => {
