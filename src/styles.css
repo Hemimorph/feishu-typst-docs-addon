@@ -204,17 +204,26 @@ button, input, textarea { font: inherit; }
   width: 100%;
   min-height: 0;
   flex: 1 1 0;
-  overflow: auto;
-  resize: none;
-  border: 0;
+  overflow: hidden;
   border-top: 1px solid var(--border);
-  outline: none;
-  padding: 14px;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  tab-size: 2;
 }
+.source-editor-loading {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+.source-editor > .cm-editor { height: 100%; }
+.source-editor .cm-editor.cm-focused { outline: none; }
+.source-editor .cm-scroller {
+  overflow: auto;
+  font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.source-editor .cm-content { min-height: 100%; padding: 10px 0; caret-color: var(--text); }
+.source-editor .cm-line { padding: 0 14px 0 7px; }
+.source-editor .cm-gutterElement { padding: 0 7px 0 9px; }
 .result-pane .preview-shell { min-height: 0; flex: 1; border-top: 1px solid var(--border); }
 
 .resources-panel {

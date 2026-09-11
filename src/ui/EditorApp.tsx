@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BlockType,
   DOCS_MODE,
@@ -36,7 +36,12 @@ import {
 import { fromRecordData, readAddonRecord, saveAddonRecord } from '../record';
 import { compressedRecordBytes, ensureCompressedRecordQuota } from '../record-codec';
 import { TypstPreview } from './TypstPreview';
+import type { TypstSourceEditorHandle } from './TypstSourceEditor';
 import { useFeishuTheme } from './useFeishuTheme';
+
+const TypstSourceEditor = lazy(() =>
+  import('./TypstSourceEditor').then((module) => ({ default: module.TypstSourceEditor })),
+);
 
 const collectImageBlocks = (root: BlockSnapshot): ImageBlockSnapshot[] => {
   const images: ImageBlockSnapshot[] = [];
@@ -108,7 +113,7 @@ export const EditorApp = () => {
   const [quotaCalculating, setQuotaCalculating] = useState(true);
   const [quotaError, setQuotaError] = useState<string>();
   const loaded = useRef(false);
-  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
+  const sourceEditorRef = useRef<TypstSourceEditorHandle>(null);
   const baseVersionRef = useRef(0);
   const dirtyRef = useRef(false);
   const assetListRef = useRef<HTMLDivElement>(null);
@@ -638,17 +643,23 @@ export const EditorApp = () => {
 
       <section className="editor-grid">
         <div className="source-pane">
-          <label className="field-label" htmlFor="typst-source">Typst 源码</label>
-          <textarea
-            id="typst-source"
-            ref={sourceEditorRef}
-            className="source-editor"
-            value={draft.source}
-            spellCheck={false}
-            onChange={(event) =>
-              updateDraft((current) => ({ ...current, source: event.target.value }))
-            }
-          />
+          <span className="field-label" id="typst-source-label">Typst 源码</span>
+          <Suspense
+            fallback={(
+              <div className="source-editor source-editor-loading" role="status">
+                正在加载语法高亮…
+              </div>
+            )}
+          >
+            <TypstSourceEditor
+              ref={sourceEditorRef}
+              labelledBy="typst-source-label"
+              value={draft.source}
+              onChange={(source) =>
+                updateDraft((current) => ({ ...current, source }))
+              }
+            />
+          </Suspense>
         </div>
         <div className="result-pane">
           <span className="field-label">实时预览</span>
